@@ -12,6 +12,7 @@ Author:            Martin Maurer (Martin.Maurer@clibb.de)
 
 Copyright:         (c) Martin Maurer 2003-2014, All rights reserved
 Portions Copyright (c) by Aeolus Development 2004 http://www.aeolusdevelopment.com
+Portions Copyright (c) by Yasunobu Okamura 2014 http://informationsea.info
 
     This file is part of lpc21isp.
 
@@ -31,9 +32,12 @@ Portions Copyright (c) by Aeolus Development 2004 http://www.aeolusdevelopment.c
 */
 
 #if defined(_WIN32)
+#include <Winsock2.h>
 #if !defined __BORLANDC__
 #include "StdAfx.h"
 #endif
+#else // defined(_WIN32)
+#include <sys/select.h>
 #endif // defined(_WIN32)
 #include "lpc21isp.h"
 #include "lpcterm.h"
@@ -77,6 +81,14 @@ void Terminal(ISP_ENVIRONMENT *IspEnvironment)
         char buffer[128];
         int           fdlogfile = -1;
         unsigned long realsize;
+        int fdcom;
+
+#if _WIN32
+        fdcom = _open_osfhandle(IspEnvironment->hCom);
+#else
+        fdcom = IspEnvironment->fdCom;
+#endif
+
 
         // When logging is switched on, output terminal output to lpc21isp.log
         if (IspEnvironment->LogFile)
@@ -91,20 +103,35 @@ void Terminal(ISP_ENVIRONMENT *IspEnvironment)
 
         do
         {
-            ReceiveComPort(IspEnvironment, buffer, sizeof(buffer) - 1, &realsize, 0,200);          // Check for received characters
+            fd_set fdset;
+            int select_status;
 
-            if (realsize)
+            FD_ZERO(&fdset);
+            FD_SET(STDIN_FILENO, &fdset);
+            FD_SET(fdcom, &fdset);
+
+            select_status = select(fdcom + 1, &fdset, NULL, NULL, NULL);
+            if (select_status < 0) { // Break on Error
+                break;
+            }
+            if (FD_ISSET(fdcom, &fdset))
             {
-                write(1, buffer, realsize);
-                fflush(stdout);
-                if (IspEnvironment->LogFile)     // When logging is turned on, then copy output to logfile
+            
+                ReceiveComPort(IspEnvironment, buffer, sizeof(buffer) - 1, &realsize, 0, 0);          // Check for received characters
+
+                if (realsize)
                 {
-                    write(fdlogfile, buffer, realsize);
+                    write(1, buffer, realsize);
+                    fflush(stdout);
+                    if (IspEnvironment->LogFile)     // When logging is turned on, then copy output to logfile
+                    {
+                        write(fdlogfile, buffer, realsize);
+                    }
                 }
             }
 
             // check for keypress, and write any out the port.
-            if (kbhit())
+            if (FD_ISSET(STDIN_FILENO, &fdset))
             {
                 ch = getch();
                 if (ch == 0x1b)
